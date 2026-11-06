@@ -4,9 +4,77 @@
 #include <d3d9.h>
 #include <stdint.h>
 #include <string.h>
+#include <stdio.h>
+#include <stdarg.h>
 #include "MinHook.h"
 
 namespace sshook {
+
+// ---------------------------------------------------------------- log (junto al .asi: <nombre>.log)
+namespace log_detail {
+inline char g_path[MAX_PATH] = {};
+inline CRITICAL_SECTION g_cs;
+inline bool g_ready = false;
+inline volatile LONG g_excCount = 0;
+}  // namespace log_detail
+
+inline void Log(const char* fmt, ...) {
+    using namespace log_detail;
+    if (!g_ready) return;
+    char buf[640];
+    int n = snprintf(buf, sizeof(buf), "[%8lu] ", GetTickCount());
+    va_list ap;
+    va_start(ap, fmt);
+    n += vsnprintf(buf + n, sizeof(buf) - n - 2, fmt, ap);
+    va_end(ap);
+    buf[n++] = '\n';
+    EnterCriticalSection(&g_cs);
+    HANDLE f = CreateFileA(g_path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_ALWAYS,
+                           FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (f != INVALID_HANDLE_VALUE) {
+        DWORD w;
+        WriteFile(f, buf, static_cast<DWORD>(n), &w, nullptr);
+        CloseHandle(f);
+    }
+    LeaveCriticalSection(&g_cs);
+}
+
+// Registra las primeras excepciones (AV, etc.) con direccion y modulo: sirve para ver quien rompe el arranque.
+inline LONG CALLBACK ExceptionLogger(PEXCEPTION_POINTERS ep) {
+    DWORD code = ep->ExceptionRecord->ExceptionCode;
+    if (code == 0xC0000005 || code == 0xC000001D || code == 0xC0000096 || code == 0xC00000FD || code == 0xC0000409 ||
+        code == 0xC0000094 || code == 0xC000008C) {
+        if (InterlockedIncrement(&log_detail::g_excCount) <= 40) {
+            void* addr = ep->ExceptionRecord->ExceptionAddress;
+            char mod[MAX_PATH] = "?";
+            HMODULE m = nullptr;
+            if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                   static_cast<LPCSTR>(addr), &m) && m)
+                GetModuleFileNameA(m, mod, MAX_PATH);
+            Log("EXCEPCION %08lX en %p (%s +0x%lX) info0=%lu info1=%p", code, addr, mod,
+                static_cast<unsigned long>(reinterpret_cast<uintptr_t>(addr) - reinterpret_cast<uintptr_t>(m)),
+                ep->ExceptionRecord->NumberParameters > 0 ? ep->ExceptionRecord->ExceptionInformation[0] : 0UL,
+                ep->ExceptionRecord->NumberParameters > 1 ? reinterpret_cast<void*>(ep->ExceptionRecord->ExceptionInformation[1]) : nullptr);
+        }
+    }
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+inline void LogInit(HMODULE self) {
+    using namespace log_detail;
+    InitializeCriticalSection(&g_cs);
+    DWORD n = GetModuleFileNameA(self, g_path, MAX_PATH);
+    if (n > 4 && n < MAX_PATH) {
+        strcpy(g_path + n - 4, ".log");  // .asi -> .log
+        HANDLE f = CreateFileA(g_path, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, CREATE_ALWAYS,
+                               FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (f != INVALID_HANDLE_VALUE) {
+            CloseHandle(f);
+            g_ready = true;
+        }
+    }
+    AddVectoredExceptionHandler(1, ExceptionLogger);
+}
 
 // ---------------------------------------------------------------- memoria
 inline bool CanRead(uintptr_t addr, size_t n) {
@@ -41,14 +109,31 @@ inline bool CreateHook(void* target, F detour, F* original) {
 // Crea + habilita al momento (equivale a InstallHookRaw del original).
 template <class F>
 inline bool InstallHook(void* target, F detour, F* original) {
-    if (MH_CreateHook(target, reinterpret_cast<LPVOID>(detour), reinterpret_cast<LPVOID*>(original)) != MH_OK)
+    MH_STATUS st = MH_CreateHook(target, reinterpret_cast<LPVOID>(detour), reinterpret_cast<LPVOID*>(original));
+    if (st != MH_OK) {
+        Log("MH_CreateHook(%p) fallo: %s", target, MH_StatusToString(st));
         return false;
-    if (MH_EnableHook(target) != MH_OK) {
+    }
+    st = MH_EnableHook(target);
+    if (st != MH_OK) {
+        Log("MH_EnableHook(%p) fallo: %s", target, MH_StatusToString(st));
         MH_RemoveHook(target);
         *original = nullptr;
         return false;
     }
+    Log("hook ok en %p", target);
     return true;
+}
+
+// Espera a que el .exe (protegido) este descifrado: patron del prologue en 0x558910 (el mismo que usa el mod original).
+inline bool WaitForDecryptedExe(DWORD timeoutMs) {
+    static const BYTE pat[7] = {0x83, 0xEC, 0x10, 0x53, 0x55, 0x56, 0x57};
+    DWORD start = GetTickCount();
+    for (;;) {
+        if (BytesMatch(0x00558910, pat, sizeof(pat))) return true;
+        if (GetTickCount() - start > timeoutMs) return false;
+        Sleep(1);
+    }
 }
 
 template <class F>

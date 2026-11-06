@@ -89,6 +89,7 @@ BOOL WINAPI HookMoveWindow(HWND hWnd, int X, int Y, int W, int H, BOOL repaint) 
     const int cw = W - (adj.right - adj.left);
     const int ch = H - (adj.bottom - adj.top);
 
+    Log("MoveWindow(%d,%d,%d,%d) cliente=%dx%d -> %s", X, Y, W, H, cw, ch, WantsFramedWindow(cw, ch) ? "ventana" : "borderless");
     if (WantsFramedWindow(cw, ch)) {
         SetWindowLongW(hWnd, GWL_STYLE, static_cast<LONG>(visible | kFramedStyle));
         RECT r = {0, 0, cw, ch};
@@ -145,6 +146,7 @@ void ApplyPresentParams(D3DPRESENT_PARAMETERS* pp) {
 
 void OnDeviceCreated(HWND hwnd) {
     if (!g_gameHwnd) g_gameHwnd = hwnd;
+    Log("CreateDevice ok, hwnd=%p", hwnd);
 }
 
 // ------------------------------------------------------------ resolucion por defecto = escritorio
@@ -206,13 +208,21 @@ void BeforeCreate9() { DefaultResolution_TryInstallHook(); }
 // ------------------------------------------------------------ arranque
 void Init() {
     CaptureDesktopSize();
-    if (MH_Initialize() != MH_OK) return;
+    Log("tamano forzado %dx%d", g_forcedW, g_forcedH);
+    MH_STATUS st = MH_Initialize();
+    if (st != MH_OK) {
+        Log("MH_Initialize fallo: %s", MH_StatusToString(st));
+        return;
+    }
 
     g_realSetWindowPos = reinterpret_cast<SetWindowPos_t>(ModuleProc(L"user32.dll", "SetWindowPos"));
     void* pCreate = ModuleProc(L"user32.dll", "CreateWindowExA");
     void* pMove = ModuleProc(L"user32.dll", "MoveWindow");
     void* pShow = ModuleProc(L"user32.dll", "ShowWindow");
-    if (!g_realSetWindowPos || !pCreate || !pMove || !pShow) return;
+    if (!g_realSetWindowPos || !pCreate || !pMove || !pShow) {
+        Log("no se encontraron funciones de user32");
+        return;
+    }
 
     InstallHook(pCreate, HookCreateWindowExA, &g_realCreateWindowExA);
     InstallHook(pMove, HookMoveWindow, &g_realMoveWindow);
@@ -226,6 +236,15 @@ void Init() {
 
     HANDLE t = CreateThread(nullptr, 0, PollThread, nullptr, 0, nullptr);
     if (t) CloseHandle(t);
+    Log("init terminado");
+}
+
+// Todo el arranque va fuera de DllMain (loader lock) y se retrasa hasta que el .exe este descifrado.
+DWORD WINAPI InitThread(LPVOID) {
+    bool ok = WaitForDecryptedExe(20000);
+    Log("exe descifrado: %s", ok ? "si" : "no (timeout, se continua igualmente)");
+    Init();
+    return 0;
 }
 
 }  // namespace
@@ -233,7 +252,10 @@ void Init() {
 extern "C" BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID) {
     if (reason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(inst);
-        Init();
+        LogInit(inst);
+        Log("sshook_borderless attach");
+        HANDLE t = CreateThread(nullptr, 0, InitThread, nullptr, 0, nullptr);
+        if (t) CloseHandle(t);
     }
     return TRUE;
 }

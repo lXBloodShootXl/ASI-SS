@@ -21,12 +21,22 @@ VOID WINAPI HookExitProcess(UINT code) {
 
 void OnDeviceCreated(HWND hwnd) {
     if (!g_gameHwnd) g_gameHwnd = hwnd;
+    Log("CreateDevice ok, hwnd=%p", hwnd);
 }
 
+// El watchdog solo se "arma" cuando la ventana del dispositivo ha sido visible alguna vez (asi una ventana
+// temporal/oculta no mata el proceso) y la ventana desaparece despues.
 DWORD WINAPI ExitWatchdogProc(LPVOID) {
     HWND hwnd;
     while (!(hwnd = g_gameHwnd)) Sleep(250);
+    while (IsWindow(hwnd) && !IsWindowVisible(hwnd)) Sleep(250);
+    if (!IsWindow(hwnd)) {
+        Log("watchdog: la ventana desaparecio sin llegar a mostrarse; no se arma");
+        return 0;
+    }
+    Log("watchdog armado (hwnd=%p)", hwnd);
     while (IsWindow(hwnd)) Sleep(250);
+    Log("watchdog: ventana cerrada, terminando proceso");
     Sleep(1000);
     TerminateProcess(GetCurrentProcess(), 0);
     return 0;
@@ -35,10 +45,23 @@ DWORD WINAPI ExitWatchdogProc(LPVOID) {
 // El .exe esta protegido y se descifra durante el arranque: solo se parchea si el byte actual es un
 // salto condicional corto (0x70..0x7F), y se sigue comprobando por si el descifrado lo sobrescribe.
 DWORD WINAPI PatchThread(LPVOID) {
-    for (int i = 0; i < 720; ++i) {  // ~3 min
+    // NUNCA tocar el .exe mientras siga cifrado: modificar el texto cifrado corrompe el descifrado.
+    if (!WaitForDecryptedExe(60000)) {
+        Log("exe no descifrado tras 60 s: no se aplica el parche");
+        return 0;
+    }
+    Log("exe descifrado");
+    bool logged = false;
+    for (int i = 0; i < 240; ++i) {  // ~1 min comprobando por si se restaura
         if (CanRead(kCrashFixAddr, 1)) {
             BYTE b = *reinterpret_cast<const BYTE*>(kCrashFixAddr);
-            if (b >= 0x70 && b <= 0x7F) PatchByte(kCrashFixAddr, 0xEB);
+            if (b >= 0x70 && b <= 0x7F) {
+                bool ok = PatchByte(kCrashFixAddr, 0xEB);
+                Log("parche 0x%08X: %02X -> EB (%s)", static_cast<unsigned>(kCrashFixAddr), b, ok ? "ok" : "fallo");
+            } else if (!logged) {
+                Log("byte en 0x%08X = %02X (ya parcheado o no es un jcc corto)", static_cast<unsigned>(kCrashFixAddr), b);
+                logged = true;
+            }
         }
         Sleep(250);
     }
@@ -46,7 +69,11 @@ DWORD WINAPI PatchThread(LPVOID) {
 }
 
 void Init() {
-    if (MH_Initialize() != MH_OK) return;
+    MH_STATUS st = MH_Initialize();
+    if (st != MH_OK) {
+        Log("MH_Initialize fallo: %s", MH_StatusToString(st));
+        return;
+    }
 
     void* pExit = ModuleProc(L"kernel32.dll", "ExitProcess");
     if (pExit) InstallHook(pExit, HookExitProcess, &g_realExitProcess);
@@ -59,6 +86,15 @@ void Init() {
     if (t) CloseHandle(t);
     t = CreateThread(nullptr, 0, PatchThread, nullptr, 0, nullptr);
     if (t) CloseHandle(t);
+    Log("init terminado");
+}
+
+// Fuera de DllMain (loader lock) y tras descifrarse el .exe.
+DWORD WINAPI InitThread(LPVOID) {
+    bool ok = WaitForDecryptedExe(20000);
+    Log("exe descifrado: %s", ok ? "si" : "no (timeout, se continua igualmente)");
+    Init();
+    return 0;
 }
 
 }  // namespace
@@ -66,7 +102,10 @@ void Init() {
 extern "C" BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID) {
     if (reason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(inst);
-        Init();
+        LogInit(inst);
+        Log("sshook_crashfixes attach");
+        HANDLE t = CreateThread(nullptr, 0, InitThread, nullptr, 0, nullptr);
+        if (t) CloseHandle(t);
     }
     return TRUE;
 }
