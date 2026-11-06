@@ -1,6 +1,8 @@
 // sshook_crashfixes.asi - Split/Second: Revised
 //  * ExitProcess -> TerminateProcess (evita cuelgues/crashes al cerrar el juego)
 //  * Watchdog: si la ventana del juego desaparece, termina el proceso 1 s despues
+//  * MemcpyGuard: si memcpy del .exe (0x7577C0) lee mas alla de un bloque de memoria (AV de lectura), se
+//    aborta esa copia y se retorna al llamador en vez de crashear. Registra el llamador para poder arreglarlo.
 //  * Parche del .exe: salto condicional -> incondicional en 0x7BA19E (fix de crash del mod original)
 // Reescrito a partir de crash_fixes.cpp del mod original.
 #include "../common/sshook_common.h"
@@ -17,6 +19,39 @@ volatile HWND g_gameHwnd = nullptr;
 
 VOID WINAPI HookExitProcess(UINT code) {
     TerminateProcess(GetCurrentProcess(), code);
+}
+
+// ---- Guard de memcpy (CRT de MSVC del .exe, 0x007577C0..0x00757B10; marco: push ebp / push edi / push esi) ----
+constexpr uintptr_t kMemcpyLo = 0x007577C0, kMemcpyHi = 0x00757B10;
+volatile LONG g_memcpyFaults = 0;
+
+LONG CALLBACK MemcpyGuard(PEXCEPTION_POINTERS ep) {
+    EXCEPTION_RECORD* er = ep->ExceptionRecord;
+    CONTEXT* c = ep->ContextRecord;
+    if (er->ExceptionCode != EXCEPTION_ACCESS_VIOLATION) return EXCEPTION_CONTINUE_SEARCH;
+    if (c->Eip < kMemcpyLo || c->Eip >= kMemcpyHi) return EXCEPTION_CONTINUE_SEARCH;
+    if (er->NumberParameters < 2 || er->ExceptionInformation[0] != 0) return EXCEPTION_CONTINUE_SEARCH;  // solo lecturas
+
+    uintptr_t ebp = c->Ebp;
+    if (ebp < c->Esp || ebp - c->Esp > 0x100 || !CanRead(ebp - 8, 0x14)) return EXCEPTION_CONTINUE_SEARCH;
+    const DWORD* f = reinterpret_cast<const DWORD*>(ebp);
+    DWORD savedEbp = f[0], ret = f[1], dst = f[2], src = f[3], n = f[4];
+    if (ret < 0x00401000 || ret >= 0x00B9B000) return EXCEPTION_CONTINUE_SEARCH;  // el retorno debe estar en .text
+
+    LONG k = InterlockedIncrement(&g_memcpyFaults);
+    if (k <= 40)
+        Log("memcpy guard #%ld: llamador=%08lX dst=%08lX src=%08lX n=%lu (fallo en %08lX)", k, ret, dst, src, n,
+            static_cast<unsigned long>(er->ExceptionInformation[1]));
+
+    // Simula el "ret" de memcpy (cdecl): restaura registros guardados, eax=dst, limpia DF.
+    c->Edi = f[-1];
+    c->Esi = f[-2];
+    c->Eax = dst;
+    c->Ebp = savedEbp;
+    c->Eip = ret;
+    c->Esp = static_cast<DWORD>(ebp + 8);
+    c->EFlags &= ~0x400u;
+    return EXCEPTION_CONTINUE_EXECUTION;
 }
 
 void OnDeviceCreated(HWND hwnd) {
@@ -75,6 +110,7 @@ DWORD WINAPI PatchThread(LPVOID) {
 }
 
 void Init() {
+    AddVectoredExceptionHandler(1, MemcpyGuard);
     MH_STATUS st = MH_Initialize();
     if (st != MH_OK) {
         Log("MH_Initialize fallo: %s", MH_StatusToString(st));

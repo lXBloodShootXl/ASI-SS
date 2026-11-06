@@ -10,6 +10,8 @@
 
 namespace sshook {
 
+inline bool CanRead(uintptr_t addr, size_t n);
+
 // ---------------------------------------------------------------- log (junto al .asi: <nombre>.log)
 namespace log_detail {
 inline char g_path[MAX_PATH] = {};
@@ -55,6 +57,15 @@ inline LONG CALLBACK ExceptionLogger(PEXCEPTION_POINTERS ep) {
                 static_cast<unsigned long>(reinterpret_cast<uintptr_t>(addr) - reinterpret_cast<uintptr_t>(m)),
                 ep->ExceptionRecord->NumberParameters > 0 ? ep->ExceptionRecord->ExceptionInformation[0] : 0UL,
                 ep->ExceptionRecord->NumberParameters > 1 ? reinterpret_cast<void*>(ep->ExceptionRecord->ExceptionInformation[1]) : nullptr);
+            // Registros y pila: la direccion de retorno del llamador esta en [esp]/[ebp+4].
+            const CONTEXT* c = ep->ContextRecord;
+            Log("  regs eax=%08lX ebx=%08lX ecx=%08lX edx=%08lX esi=%08lX edi=%08lX ebp=%08lX esp=%08lX",
+                c->Eax, c->Ebx, c->Ecx, c->Edx, c->Esi, c->Edi, c->Ebp, c->Esp);
+            const DWORD* sp = reinterpret_cast<const DWORD*>(c->Esp);
+            if (CanRead(c->Esp, 16 * 4)) {
+                Log("  stack %08lX %08lX %08lX %08lX %08lX %08lX %08lX %08lX", sp[0], sp[1], sp[2], sp[3], sp[4], sp[5], sp[6], sp[7]);
+                Log("        %08lX %08lX %08lX %08lX %08lX %08lX %08lX %08lX", sp[8], sp[9], sp[10], sp[11], sp[12], sp[13], sp[14], sp[15]);
+            }
         }
     }
     return EXCEPTION_CONTINUE_SEARCH;
