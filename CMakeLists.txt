@@ -28,3 +28,4 @@ endfunction()
 
 add_asi(sshook_borderless  borderless/borderless.cpp)
 add_asi(sshook_crashfixes  crashfixes/crashfixes.cpp)
+add_asi(sshook_matfix      matfix/matfix.cpp)
