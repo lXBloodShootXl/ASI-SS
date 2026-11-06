@@ -5,7 +5,7 @@ Reescritos a mano a partir del desensamblado/DWARF del mod original. **Sin proba
 | .asi | Que hace |
 |---|---|
 | `sshook_borderless.asi` | Ventana sin bordes a resolucion de escritorio; modo ventana con marco si el juego pide menos resolucion; resolucion por defecto = escritorio. Variable opcional `SSHOOK_WINDOW=1600x900` para forzar el tamano de "pantalla". |
-| `sshook_matfix.asi` | Parche de contencion del use-after-free de materiales: anula el `call 0x510860` en `0x467855` (6 NOPs) para que no se libere el grupo de materiales que aun usan objetos de render. Solo parchea si los bytes coinciden (`50 E8 05 90 0A 00`). Log: `sshook_matfix.log`. |
+| `sshook_matfix.asi` | Parche de contencion del use-after-free de materiales: hace que `0x510860` (liberador de grupos de materiales, 11 llamadores) retorne de inmediato (`C2 04 00`). Solo parchea si los bytes coinciden (`8B 81 20 08 00 00`). Log: `sshook_matfix.log`. |
 | `sshook_crashfixes.asi` | ExitProcess->TerminateProcess, watchdog de salida, parche `0x7BA19E` (jcc->jmp). |
 
 ## Compilar (sin instalar nada)

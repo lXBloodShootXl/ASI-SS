@@ -1,20 +1,20 @@
 // sshook_matfix.asi - Split/Second: use-after-free de materiales
 //
-// 0x467855: push eax / call 0x510860  (en el destructor 0x4677E0)
-// 0x510860 busca un grupo de materiales en la lista del gestor y lo borra entero (0x515DD0 -> 0x516410: Release de
+// 0x510860 (thiscall, 1 arg, ret 4; 11 llamadores) busca un grupo de materiales en la lista del gestor y lo borra entero (0x515DD0 -> 0x516410: Release de
 // los shaders [+0x114]/[+0x118] y free del material) sin contar referencias. Los objetos de render que aun lo usan
 // ([obj+0x60], leido en 0x50811A -> 0x512590) acaban leyendo materiales/shaders liberados.
-// Parche de contencion: se anulan esas dos instrucciones (6 NOPs), asi ese grupo no se libera por esta ruta.
-// Coste: algo de memoria no liberada. No cambia el resto de usos de 0x510860.
+// Parche de contencion: 0x510860 retorna de inmediato (C2 04 00) y nunca libera grupos de materiales.
+// Coste: memoria de materiales sin liberar (crece entre carreras).
 #include "../common/sshook_common.h"
 
 using namespace sshook;
 
 namespace {
 
-constexpr uintptr_t kPatchAddr = 0x00467855;
-const BYTE kOrig[6] = {0x50, 0xE8, 0x05, 0x90, 0x0A, 0x00};  // push eax / call 0x510860
-const BYTE kNops[6] = {0x90, 0x90, 0x90, 0x90, 0x90, 0x90};
+// v7: se parchea la entrada de 0x510860 (hay 11 llamadores, no solo 0x467856): mov eax,[ecx+0x820] -> ret 4
+constexpr uintptr_t kPatchAddr = 0x00510860;
+const BYTE kOrig[6] = {0x8B, 0x81, 0x20, 0x08, 0x00, 0x00};
+const BYTE kRet4[3] = {0xC2, 0x04, 0x00};
 
 bool PatchBytes(uintptr_t addr, const BYTE* src, size_t n) {
     DWORD old = 0;
@@ -28,24 +28,21 @@ bool PatchBytes(uintptr_t addr, const BYTE* src, size_t n) {
 
 DWORD WINAPI PatchThread(LPVOID) {
     LogExeInfo();
-    // El .exe esta protegido (.secu) y se descifra al arrancar: no tocar antes.
-    bool dec = WaitForDecryptedExe(120000);
-    Log("exe descifrado: %s", dec ? "si" : "no (timeout)");
-    if (!dec) return 0;
-
+    // v7: ya no se usa WaitForDecryptedExe (su patron de 0x558910 no existe en este exe y bloqueaba el parche).
+    // Se sondean directamente los bytes de 0x510860.
     DumpBytes("antes   ", kPatchAddr, 6);
     DWORD start = GetTickCount();
     bool applied = false;
     // Vigila ~5 min: si la proteccion restaura los bytes originales, se vuelve a parchear.
     while (GetTickCount() - start < 300000) {
         if (BytesMatch(kPatchAddr, kOrig, sizeof(kOrig))) {
-            bool ok = PatchBytes(kPatchAddr, kNops, sizeof(kNops));
-            Log("parche 0x%08X: call 0x510860 anulado (%s)", static_cast<unsigned>(kPatchAddr), ok ? "ok" : "fallo");
+            bool ok = PatchBytes(kPatchAddr, kRet4, sizeof(kRet4));
+            Log("parche 0x%08X: 0x510860 -> ret 4 (%s)", static_cast<unsigned>(kPatchAddr), ok ? "ok" : "fallo");
             DumpBytes("despues ", kPatchAddr, 6);
             applied = applied || ok;
-        } else if (BytesMatch(kPatchAddr, kNops, sizeof(kNops))) {
+        } else if (BytesMatch(kPatchAddr, kRet4, sizeof(kRet4))) {
             if (!applied) {
-                Log("bytes ya en NOP (ya parcheado)");
+                Log("bytes ya en ret 4 (ya parcheado)");
                 applied = true;
             }
         } else if (GetTickCount() - start > 20000 && !applied) {
