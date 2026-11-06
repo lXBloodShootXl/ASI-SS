@@ -27,3 +27,7 @@ aplican si los bytes coinciden con los del mod original (version Steam del juego
   primeras excepciones (direccion y modulo). Si el juego no arranca, envia ese log.
 - El arranque ya no ocurre en DllMain: se hace en un hilo cuando el .exe esta descifrado.
 - crashfixes solo parchea con el .exe descifrado, y el watchdog solo se arma si la ventana llego a mostrarse.
+
+## v3
+- Los hooks de ventana y D3D se instalan en cuanto carga el .asi (la v2 esperaba 20 s y el juego ya habia creado la ventana).
+- Los logs vuelcan datos del .exe (base, timestamp, bytes en las direcciones usadas) para comprobar la version.

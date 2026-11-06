@@ -197,9 +197,21 @@ DWORD WINAPI PollThread(LPVOID) {
     ForceExistingWindows();
     for (int i = 0; i < 1800; ++i) {  // ~3 min
         DefaultResolution_TryInstallHook();
-        if (g_origDisplaySettingsCtor && g_origSetDisplayParams) break;
+        if (g_origDisplaySettingsCtor && g_origSetDisplayParams) {
+            Log("hooks de resolucion por defecto instalados");
+            return 0;
+        }
+        if (i % 50 == 0) {  // cada 5 s
+            Log("esperando codigo del juego: ctor=%s setparams=%s", g_origDisplaySettingsCtor ? "ok" : "no",
+                g_origSetDisplayParams ? "ok" : "no");
+            if (i == 0 || i == 100) {
+                DumpBytes("ctor     ", kAddrDisplaySettingsCtor, 12);
+                DumpBytes("setparams", kAddrSetDisplayParams, 13);
+            }
+        }
         Sleep(100);
     }
+    Log("resolucion por defecto: no se encontraron los patrones del juego (otra version del .exe?)");
     return 0;
 }
 
@@ -239,10 +251,9 @@ void Init() {
     Log("init terminado");
 }
 
-// Todo el arranque va fuera de DllMain (loader lock) y se retrasa hasta que el .exe este descifrado.
+// Fuera de DllMain (loader lock). Los hooks de user32/D3D se instalan YA: el juego crea la ventana muy pronto.
 DWORD WINAPI InitThread(LPVOID) {
-    bool ok = WaitForDecryptedExe(20000);
-    Log("exe descifrado: %s", ok ? "si" : "no (timeout, se continua igualmente)");
+    LogExeInfo();
     Init();
     return 0;
 }

@@ -42,15 +42,13 @@ DWORD WINAPI ExitWatchdogProc(LPVOID) {
     return 0;
 }
 
-// El .exe esta protegido y se descifra durante el arranque: solo se parchea si el byte actual es un
-// salto condicional corto (0x70..0x7F), y se sigue comprobando por si el descifrado lo sobrescribe.
+// El .exe esta protegido y se descifra al arrancar: no se toca hasta que la ventana del juego existe
+// (o pasan 10 s). Solo se parchea si el byte actual es un salto condicional corto (0x70..0x7F).
 DWORD WINAPI PatchThread(LPVOID) {
-    // NUNCA tocar el .exe mientras siga cifrado: modificar el texto cifrado corrompe el descifrado.
-    if (!WaitForDecryptedExe(60000)) {
-        Log("exe no descifrado tras 60 s: no se aplica el parche");
-        return 0;
-    }
-    Log("exe descifrado");
+    DWORD start = GetTickCount();
+    while (!g_gameHwnd && GetTickCount() - start < 10000) Sleep(100);
+    Log("parche: iniciando comprobacion (hwnd=%p)", static_cast<void*>(g_gameHwnd));
+    DumpBytes("crashfix ", kCrashFixAddr - 4, 12);
     bool logged = false;
     for (int i = 0; i < 240; ++i) {  // ~1 min comprobando por si se restaura
         if (CanRead(kCrashFixAddr, 1)) {
@@ -89,10 +87,9 @@ void Init() {
     Log("init terminado");
 }
 
-// Fuera de DllMain (loader lock) y tras descifrarse el .exe.
+// Fuera de DllMain (loader lock); los hooks se instalan ya.
 DWORD WINAPI InitThread(LPVOID) {
-    bool ok = WaitForDecryptedExe(20000);
-    Log("exe descifrado: %s", ok ? "si" : "no (timeout, se continua igualmente)");
+    LogExeInfo();
     Init();
     return 0;
 }

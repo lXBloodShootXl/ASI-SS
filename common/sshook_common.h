@@ -125,6 +125,30 @@ inline bool InstallHook(void* target, F detour, F* original) {
     return true;
 }
 
+inline void DumpBytes(const char* label, uintptr_t addr, size_t n) {
+    char hex[128] = {};
+    if (!CanRead(addr, n)) {
+        Log("%s @0x%08X: no legible", label, static_cast<unsigned>(addr));
+        return;
+    }
+    for (size_t i = 0; i < n && i < 32; ++i) snprintf(hex + i * 3, 4, "%02X ", reinterpret_cast<const BYTE*>(addr)[i]);
+    Log("%s @0x%08X: %s", label, static_cast<unsigned>(addr), hex);
+}
+
+// Datos del .exe del juego, para saber con que version estamos tratando.
+inline void LogExeInfo() {
+    char path[MAX_PATH] = "?";
+    GetModuleFileNameA(nullptr, path, MAX_PATH);
+    uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+    Log("exe: %s", path);
+    if (!CanRead(base, 0x100)) return;
+    uintptr_t pe = base + *reinterpret_cast<const DWORD*>(base + 0x3C);
+    if (!CanRead(pe, 0x60)) return;
+    Log("exe base=0x%08X preferredBase=0x%08X timestamp=0x%08X sizeOfImage=0x%08X entryRVA=0x%08X",
+        static_cast<unsigned>(base), *reinterpret_cast<const DWORD*>(pe + 0x34), *reinterpret_cast<const DWORD*>(pe + 8),
+        *reinterpret_cast<const DWORD*>(pe + 0x50), *reinterpret_cast<const DWORD*>(pe + 0x28));
+}
+
 // Espera a que el .exe (protegido) este descifrado: patron del prologue en 0x558910 (el mismo que usa el mod original).
 inline bool WaitForDecryptedExe(DWORD timeoutMs) {
     static const BYTE pat[7] = {0x83, 0xEC, 0x10, 0x53, 0x55, 0x56, 0x57};
