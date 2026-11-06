@@ -1,0 +1,26 @@
+name: build-asi
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Instalar MinGW (32 bits)
+        run: sudo apt-get update && sudo apt-get install -y cmake gcc-mingw-w64-i686 g++-mingw-w64-i686
+      - name: Configurar
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_SYSTEM_NAME=Windows \
+            -DCMAKE_C_COMPILER=i686-w64-mingw32-gcc \
+            -DCMAKE_CXX_COMPILER=i686-w64-mingw32-g++ \
+            -DCMAKE_BUILD_TYPE=Release
+      - name: Compilar
+        run: cmake --build build -j
+      - name: Subir .asi
+        uses: actions/upload-artifact@v4
+        with:
+          name: sshook-asi
+          path: build/*.asi
