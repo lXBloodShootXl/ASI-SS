@@ -20,26 +20,34 @@ VOID WINAPI HookExitProcess(UINT code) {
 }
 
 void OnDeviceCreated(HWND hwnd) {
-    if (!g_gameHwnd) g_gameHwnd = hwnd;
+    g_gameHwnd = hwnd;  // siempre la ultima: el juego crea primero un dispositivo temporal y luego el real
     Log("CreateDevice ok, hwnd=%p", hwnd);
 }
 
-// El watchdog solo se "arma" cuando la ventana del dispositivo ha sido visible alguna vez (asi una ventana
-// temporal/oculta no mata el proceso) y la ventana desaparece despues.
+// El watchdog solo se "arma" para una ventana de dispositivo que haya llegado a mostrarse. Si esa ventana
+// desaparece y en 1.5 s no aparece otra (p.ej. un cambio de modo), termina el proceso.
 DWORD WINAPI ExitWatchdogProc(LPVOID) {
-    HWND hwnd;
-    while (!(hwnd = g_gameHwnd)) Sleep(250);
-    while (IsWindow(hwnd) && !IsWindowVisible(hwnd)) Sleep(250);
-    if (!IsWindow(hwnd)) {
-        Log("watchdog: la ventana desaparecio sin llegar a mostrarse; no se arma");
-        return 0;
+    HWND armed = nullptr;
+    for (;;) {
+        HWND cur = g_gameHwnd;
+        if (cur != armed) {
+            armed = nullptr;
+            if (cur && IsWindow(cur) && IsWindowVisible(cur)) {
+                armed = cur;
+                Log("watchdog armado (hwnd=%p)", cur);
+            }
+        } else if (armed && !IsWindow(armed)) {
+            Sleep(1500);
+            if (g_gameHwnd == armed) {
+                Log("watchdog: ventana cerrada, terminando proceso");
+                TerminateProcess(GetCurrentProcess(), 0);
+                return 0;
+            }
+            armed = nullptr;
+            continue;
+        }
+        Sleep(250);
     }
-    Log("watchdog armado (hwnd=%p)", hwnd);
-    while (IsWindow(hwnd)) Sleep(250);
-    Log("watchdog: ventana cerrada, terminando proceso");
-    Sleep(1000);
-    TerminateProcess(GetCurrentProcess(), 0);
-    return 0;
 }
 
 // El .exe esta protegido y se descifra al arrancar: no se toca hasta que la ventana del juego existe
